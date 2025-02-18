@@ -1,0 +1,22 @@
+name: Workflow
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build in docker
+        run: docker buildx build . --target release --output type=local,dest=.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x86_84
+          path: python.so
