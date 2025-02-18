@@ -107,6 +107,9 @@ def trim(source, mod):
             elif prev_pdoc:
                 mod.write(' ' * indent_lvl)
 
+            if toktype == token.FSTRING_MIDDLE:
+                ttext = tokenize.untokenize([(toktype, ttext)])
+
             mod.write(ttext)
             last_printed_slineno += ttext.count('\n')
 
