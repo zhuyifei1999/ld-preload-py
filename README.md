@@ -4,12 +4,12 @@ Self-contained LD_PRELOAD that runs Python. Contains its own libc (musl), CPytho
 zhuyifei1999 /tmp $ ls -lh python.so
 -rw-r--r-- 1 zhuyifei1999 zhuyifei1999 12M Feb 18  2025 python.so
 zhuyifei1999 /tmp $ LD_PRELOAD=./python.so id
-Python 3.13.2 (tags/v3.13.2-dirty:4f8bb39, Feb 18 2025, 05:01:52) [GCC 14.2.0] on linux
+Python 3.13.2 (tags/v3.13.2-dirty:4f8bb39, Feb 18 2025, 14:56:31) [GCC 14.2.0] on linux
 Type "help", "copyright", "credits" or "license" for more information.
 (InteractiveConsole)
 >>> import sys
 >>> sys.path
-['/tmp/python.so', '/usr/lib/python313.zip', '/usr/lib/python3.13', '/usr/lib/python3.13/lib-dynload', '/usr/lib/python3.13/site-packages']
+['/tmp/python.so']
 >>> import traceback
 >>> traceback.print_stack()
   File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
