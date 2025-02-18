@@ -4,6 +4,10 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
+#include <wchar.h>
+
+#define noreturn __attribute__((noreturn))
+#define always_inline __attribute__((always_inline))
 
 int
 main(int argc, char **argv)
@@ -12,20 +16,99 @@ main(int argc, char **argv)
     return 0;
 }
 
-__attribute__ ((format(printf, 1, 2)))
-static void fprintf_exit(char *fmt, ...)
+static inline
+long _z_syscall(long n, ...)
 {
+    long a, b, c, d, e, f;
+    unsigned long ret;
     va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
+
+    va_start(ap, n);
+    a = va_arg(ap, long);
+    b = va_arg(ap, long);
+    c = va_arg(ap, long);
+    d = va_arg(ap, long);
+    e = va_arg(ap, long);
+    f = va_arg(ap, long);
     va_end(ap);
-    exit(1);
+
+#ifdef __x86_64__
+    register long r10 __asm__("r10") = d;
+    register long r8 __asm__("r8") = e;
+    register long r9 __asm__("r9") = f;
+    __asm__ __volatile__ (
+        "syscall" :
+        "=a"(ret) :
+        "a"(n), "D"(a), "S"(b), "d"(c), "r"(r10), "r"(r8), "r"(r9) :
+        "rcx", "r11", "memory"
+    );
+#else
+# error "Unsupported arch"
+#endif
+    return ret;
 }
 
-static void perror_exit(char *msg)
+static inline always_inline
+long _z_sys_arch_prctl(int op, unsigned long addr)
 {
-    perror(msg);
-    exit(1);
+    /* Must always_inline due to stack canary */
+    unsigned long ret;
+
+#ifdef __x86_64__
+    __asm__ __volatile__ (
+        "syscall" :
+        "=a"(ret) :
+        "a"(SYS_arch_prctl), "D"(op), "S"(addr) :
+        "rcx", "r11", "memory"
+    );
+#else
+# error "Unsupported arch"
+#endif
+    return ret;
+}
+
+static inline noreturn
+void _z_sys_exit(int status)
+{
+    _z_syscall(SYS_exit_group, status);
+    for (;;)
+        __asm__ __volatile__ ("ud2");
+}
+static inline
+int _z_sys_open(const char *pathname, int flags)
+{
+    return _z_syscall(SYS_open, pathname, flags);
+}
+static inline
+int _z_sys_close(int fd)
+{
+    return _z_syscall(SYS_close, fd);
+}
+static inline
+ssize_t _z_sys_read(int fd, void *buf, size_t count)
+{
+    return _z_syscall(SYS_read, fd, buf, count);
+}
+static inline
+ssize_t _z_sys_write(int fd, const void *buf, size_t count)
+{
+    return _z_syscall(SYS_write, fd, buf, count);
+}
+
+static inline
+size_t _z_strlen(const char *s)
+{
+    size_t len = 0;
+    while (s[len])
+        len++;
+    return len;
+}
+
+static noreturn
+void _z_die(const char *message)
+{
+    _z_sys_write(STDERR_FILENO, message, _z_strlen(message));
+    _z_sys_exit(1);
 }
 
 #define SONAME_MAX 256
@@ -38,15 +121,15 @@ static void so_path(char *name)
     ssize_t r;
     char c;
 
-    maps_fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
+    maps_fd = _z_sys_open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
     if (maps_fd < 0)
-        perror_exit("open(/proc/self/maps)");
+        _z_die("open(/proc/self/maps) failed\n");
 
 line:
     low = high = 0;
 
     while (true) {
-        r = read(maps_fd, &c, 1);
+        r = _z_sys_read(maps_fd, &c, 1);
         if (!r)
             goto not_found;
         if (r != 1)
@@ -64,7 +147,7 @@ line:
     }
 
     while (true) {
-        r = read(maps_fd, &c, 1);
+        r = _z_sys_read(maps_fd, &c, 1);
         if (!r)
             goto not_found;
         if (r != 1)
@@ -86,7 +169,7 @@ line:
         bool in_column = false;
 
         while (true) {
-            r = read(maps_fd, &c, 1);
+            r = _z_sys_read(maps_fd, &c, 1);
             if (!r)
                 break;
             if (r != 1)
@@ -110,7 +193,7 @@ line:
         goto found;
     } else {
         while (true) {
-            r = read(maps_fd, &c, 1);
+            r = _z_sys_read(maps_fd, &c, 1);
             if (!r)
                 goto not_found;
             if (r != 1)
@@ -121,65 +204,69 @@ line:
     }
 
 found:
+    _z_sys_close(maps_fd);
     return;
 
 err:
 not_found:
-    fprintf_exit("so_path: error finding path of preload");
+    _z_die("so_path failed\n");
 }
 
 extern void __init_libc(char **envp, char *pn);
-unsigned long saved_fs;
+static unsigned long saved_fs;
+
+char ***_z_import_environ;
+extern char **environ;
 
 __attribute__((constructor(65535)))
-static void realmain(int argc, char **argv, char **env)
+static void realmain(void)
 {
 #ifdef __x86_64__
-    if (syscall(SYS_arch_prctl, ARCH_GET_FS, &saved_fs))
-        perror_exit("arch_prctl(ARCH_GET_FS)");
+    if (_z_sys_arch_prctl(ARCH_GET_FS, (unsigned long)&saved_fs))
+        _z_die("arch_prctl(ARCH_GET_FS) failed\n");
 #else
 # error "Unsupported arch"
 #endif
 
-    __init_libc(env, NULL);
+    if (!_z_import_environ)
+        _z_import_environ = &environ;
 
+    __init_libc(*_z_import_environ, NULL);
+
+    wchar_t name_wide[SONAME_MAX];
     char name[SONAME_MAX];
+    const char *pname = name;
     so_path(name);
+
+    if (mbsrtowcs(name_wide, &pname, SONAME_MAX, NULL) == (size_t)-1)
+        _z_die("mbsrtowcs failed\n");
 
     PyStatus status;
     PyConfig config;
     PyConfig_InitIsolatedConfig(&config);
 
-    status = Py_InitializeFromConfig(&config);
-    if (PyStatus_Exception(status)) {
+    status = PyWideStringList_Insert(&config.module_search_paths,
+                                     0, name_wide);
+    if (PyStatus_Exception(status))
         Py_ExitStatusException(status);
-    }
+    config.module_search_paths_set = 1;
+    config.site_import = 0;
+
+    status = Py_InitializeFromConfig(&config);
+    if (PyStatus_Exception(status))
+        Py_ExitStatusException(status);
     PyConfig_Clear(&config);
-
-    PyObject *sys_path = PySys_GetObject("path");
-    if (!sys_path) {
-        PyErr_SetString(PyExc_RuntimeError, "Can't get sys.path");
-        goto out;
-    }
-
-    PyObject *selfpath = PyUnicode_FromString(name);
-    if (!selfpath)
-        goto out;
-
-    if (PyList_Insert(sys_path, 0, selfpath))
-        goto out;
 
     PyImport_ImportModule("main");
 
-out:
     if (PyErr_Occurred())
         PyErr_Print();
 
     Py_Finalize();
 
 #ifdef __x86_64__
-    if (syscall(SYS_arch_prctl, ARCH_SET_FS, saved_fs))
-        perror_exit("arch_prctl(ARCH_SET_FS)");
+    if (_z_sys_arch_prctl(ARCH_SET_FS, saved_fs))
+        _z_die("arch_prctl(ARCH_SET_FS) failed\n");
 #else
 # error "Unsupported arch"
 #endif

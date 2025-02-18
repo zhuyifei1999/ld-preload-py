@@ -19,7 +19,7 @@ FROM alpine AS python-repo
 RUN apk add git
 RUN git clone https://github.com/python/cpython.git -b v3.13.2 --depth=1
 
-FROM python-repo AS build-static
+FROM python-repo AS build-python
 
 RUN apk add build-base linux-headers zlib-dev zlib-static
 RUN sed -i '/^\*shared\*/,$ d' cpython/Modules/Setup.stdlib.in
@@ -27,10 +27,17 @@ RUN sed -i '/_testinternalcapi/ d' cpython/Modules/Setup.stdlib.in
 COPY python.c cpython/Programs/python.c
 
 RUN cd cpython && ./configure LDFLAGS="-static-pie" --disable-shared --without-mimalloc MODULE_BUILDTYPE=static
-RUN make -C cpython LDFLAGS="-static-pie" LINKFORSHARED=" " -j$(nproc)
-RUN strip -s cpython/python
+RUN make -C cpython LDFLAGS="-static-pie" LINKFORSHARED=" " -j$(nproc) python
 
-FROM ubuntu AS build-so
+FROM python AS build-lief
+
+RUN pip install lief
+
+COPY add-relocate.py add-relocate.py
+COPY --from=build-python cpython/python python
+RUN python add-relocate.py
+
+FROM ubuntu AS build-wcc
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
@@ -40,8 +47,9 @@ RUN apt-get update && \
 RUN git clone https://github.com/endrazine/wcc.git -b v0.0.7 --depth=1 --recursive
 RUN make -C wcc -j$(nproc)
 
-COPY --from=build-static cpython/python python
+COPY --from=build-lief python.edit python
 RUN wcc/src/wld/wld -libify python
+RUN strip -s python
 
 FROM python-repo AS build-lib
 
@@ -56,7 +64,7 @@ RUN python /py-trimmer.py cpython/Lib/
 RUN python -m zipapp cpython/Lib/ -c -o Lib.zip
 
 FROM alpine AS build-final
-COPY --from=build-so python python
+COPY --from=build-wcc python python
 COPY --from=build-lib Lib.zip Lib.zip
 
 RUN cat python Lib.zip > python.so
